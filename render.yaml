@@ -1,0 +1,28 @@
+# Render Blueprint
+services:
+  # バックエンドAPI
+  - type: web
+    name: boatrace-ev-api
+    runtime: node
+    buildCommand: cd server && npm install && npm run build
+    startCommand: cd server && npm start
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: PORT
+        value: 3001
+
+  # フロントエンド
+  - type: static
+    name: boatrace-ev-frontend
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://boatrace-ev-api.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
