@@ -51,6 +51,48 @@ export async function fetchTodayVenues(date: string): Promise<number[]> {
 }
 
 /**
+ * 会場の全レースの締切時刻を取得する
+ */
+export async function fetchRaceDeadlines(date: string, venueId: number): Promise<Map<number, string>> {
+  const dateStr = date.replace(/-/g, '');
+  const jcd = String(venueId).padStart(2, '0');
+  const result = new Map<number, string>();
+
+  try {
+    const html = await fetchPage(`/owpc/pc/race/raceindex?jcd=${jcd}&hd=${dateStr}`);
+    const $ = cheerio.load(html);
+
+    const times: string[] = [];
+    $('td').each((_, td) => {
+      const text = $(td).text().trim();
+      if (text.match(/^\d{1,2}:\d{2}$/)) {
+        times.push(text);
+      }
+    });
+
+    // 最初の12個が1R〜12Rの締切時刻
+    for (let i = 0; i < Math.min(12, times.length); i++) {
+      const deadline = `${date}T${times[i].padStart(5, '0')}:00`;
+      result.set(i + 1, deadline);
+    }
+  } catch {}
+
+  return result;
+}
+
+/**
+ * 締切時刻をDBに保存する
+ */
+export function saveDeadlines(date: string, venueId: number, deadlines: Map<number, string>): void {
+  const update = db.prepare('UPDATE races SET deadline = ? WHERE race_date = ? AND venue_id = ? AND race_number = ?');
+  db.transaction(() => {
+    for (const [rno, deadline] of deadlines) {
+      update.run(deadline, date, venueId, rno);
+    }
+  })();
+}
+
+/**
  * 出走表ページからレース情報と選手情報を取得する
  */
 export async function fetchRaceCard(
@@ -170,18 +212,36 @@ export async function fetchRaceCard(
   };
 }
 
+export interface WeatherData {
+  weather: string | null;
+  windDirection: string | null;
+  windSpeed: number | null;
+  waveHeight: number | null;
+  temperature: number | null;
+  waterTemperature: number | null;
+}
+
+export interface ExhibitionResult {
+  entries: Map<number, { exhibitionTime: number | null; startTiming: number | null }>;
+  weather: WeatherData;
+}
+
 /**
- * 展示情報を取得する
+ * 展示情報 + 天候データを取得する
  */
 export async function fetchExhibitionData(
   date: string,
   venueId: number,
   raceNumber: number
-): Promise<Map<number, { exhibitionTime: number | null; startTiming: number | null }>> {
+): Promise<ExhibitionResult> {
   const dateStr = date.replace(/-/g, '');
   const jcd = String(venueId).padStart(2, '0');
   const rno = String(raceNumber).padStart(2, '0');
-  const result = new Map<number, { exhibitionTime: number | null; startTiming: number | null }>();
+  const entries = new Map<number, { exhibitionTime: number | null; startTiming: number | null }>();
+  const weather: WeatherData = {
+    weather: null, windDirection: null, windSpeed: null,
+    waveHeight: null, temperature: null, waterTemperature: null,
+  };
 
   try {
     const html = await fetchPage(
@@ -189,15 +249,103 @@ export async function fetchExhibitionData(
     );
     const $ = cheerio.load(html);
 
-    // 展示タイムは is-boatColor クラスで艇番を判別
+    // === 天候データ取得 ===
+    const bodyText = $('body').text();
+
+    // 天候: "晴" "曇り" "雨" "雪" "霧" など
+    const weatherMatch = bodyText.match(/天候\s*[:\s]*(\S+)/);
+    if (weatherMatch) weather.weather = weatherMatch[1];
+
+    // 風向: "北" "南西" など
+    const windDirMatch = bodyText.match(/風向\s*[:\s]*(\S+)/);
+    if (windDirMatch) weather.windDirection = windDirMatch[1];
+
+    // 風速: "3m" のような形式
+    const windMatch = bodyText.match(/風速\s*[:\s]*([\d.]+)\s*m/);
+    if (windMatch) weather.windSpeed = parseFloat(windMatch[1]);
+
+    // 波高: "3cm" のような形式
+    const waveMatch = bodyText.match(/波高\s*[:\s]*([\d.]+)\s*cm/);
+    if (waveMatch) weather.waveHeight = parseFloat(waveMatch[1]);
+
+    // 気温
+    const tempMatch = bodyText.match(/気温\s*[:\s]*([\d.]+)\s*℃/);
+    if (tempMatch) weather.temperature = parseFloat(tempMatch[1]);
+
+    // 水温
+    const waterTempMatch = bodyText.match(/水温\s*[:\s]*([\d.]+)\s*℃/);
+    if (waterTempMatch) weather.waterTemperature = parseFloat(waterTempMatch[1]);
+
+    // is-weather系クラスからも天候を取得（フォールバック）
+    if (!weather.weather) {
+      const weatherEl = $('.weather1_bodyUnit .weather1_bodyUnitLabelData').first();
+      if (weatherEl.length) weather.weather = weatherEl.text().trim();
+    }
+
+    // テーブルのヘッダーに"風速""波高"が含まれるセルからも取得
+    $('div, span, p').each((_, el) => {
+      const text = $(el).text().trim();
+      if (!weather.windSpeed) {
+        const m = text.match(/^(\d+)m$/);
+        const prev = $(el).prev().text().trim();
+        if (m && prev.includes('風')) weather.windSpeed = parseFloat(m[1]);
+      }
+      if (!weather.waveHeight) {
+        const m = text.match(/^(\d+)cm$/);
+        const prev = $(el).prev().text().trim();
+        if (m && prev.includes('波')) weather.waveHeight = parseFloat(m[1]);
+      }
+    });
+
+    // === 展示タイム + STタイミング取得 ===
+    // スタート展示テーブル: 各艇のSTタイミング
+    // コース/艇番/ST の並びのテーブルを探す
+    const stTimings = new Map<number, number>();
+
+    // スタート展示情報: "is-boatColor" を含むtd → その行からSTタイミングを取得
+    $('table').each((_, table) => {
+      const headerText = $(table).prev().text() + $(table).find('th').text();
+      // スタート展示テーブルを判別
+      $(table).find('tr').each((_, row) => {
+        const tds = $(row).find('td');
+        if (tds.length < 2) return;
+
+        for (let boat = 1; boat <= 6; boat++) {
+          const boatTd = $(row).find(`td.is-boatColor${boat}`);
+          if (!boatTd.length) continue;
+
+          // STタイミング: .xx形式（0.xx秒）の数値を探す
+          tds.each((_, td) => {
+            const text = $(td).text().trim();
+            // STタイミングは通常 .xx形式（例: .12, .08, -.03）
+            const stMatch = text.match(/^[F]?\s*(-?\.\d{2})$/);
+            if (stMatch) {
+              const st = parseFloat(stMatch[1]);
+              if (Math.abs(st) < 1.0) {
+                stTimings.set(boat, st);
+              }
+            }
+            // F.xx形式（フライング展示）
+            const fMatch = text.match(/^F\s*(\.?\d{2})$/);
+            if (fMatch) {
+              stTimings.set(boat, -parseFloat('0.' + fMatch[1].replace('.', '')));
+            }
+          });
+        }
+      });
+    });
+
+    // 展示タイムテーブル
     for (let boat = 1; boat <= 6; boat++) {
       const boatTd = $(`td.is-boatColor${boat}`).first();
-      if (!boatTd.length) continue;
+      if (!boatTd.length) {
+        entries.set(boat, { exhibitionTime: null, startTiming: stTimings.get(boat) || null });
+        continue;
+      }
 
       const row = boatTd.closest('tr');
       const tds = row.find('td');
 
-      // 最後のtdに展示タイムが入っていることが多い
       let exhTime: number | null = null;
       tds.each((_, td) => {
         const text = $(td).text().trim();
@@ -207,13 +355,16 @@ export async function fetchExhibitionData(
         }
       });
 
-      result.set(boat, { exhibitionTime: exhTime, startTiming: null });
+      entries.set(boat, {
+        exhibitionTime: exhTime,
+        startTiming: stTimings.get(boat) || null,
+      });
     }
   } catch {
     console.warn(`展示情報取得失敗: venue=${venueId}, race=${raceNumber}`);
   }
 
-  return result;
+  return { entries, weather };
 }
 
 /**
@@ -222,15 +373,32 @@ export async function fetchExhibitionData(
 export function saveRaceData(
   race: RaceInfo,
   entries: EntryInfo[],
-  exhibition: Map<number, { exhibitionTime: number | null; startTiming: number | null }>
+  exhibition: ExhibitionResult | Map<number, { exhibitionTime: number | null; startTiming: number | null }>
 ): number {
+  // 後方互換: 旧形式のMapも受け付ける
+  const exhEntries = exhibition instanceof Map ? exhibition : exhibition.entries;
+  const weatherData = exhibition instanceof Map ? null : exhibition.weather;
+
   const upsertRace = db.prepare(`
-    INSERT INTO races (race_date, venue_id, race_number, race_name, deadline, status)
-    VALUES (?, ?, ?, ?, ?, 'scheduled')
+    INSERT INTO races (race_date, venue_id, race_number, race_name, deadline, status,
+      weather, wind_direction, wind_speed, wave_height, temperature, water_temperature)
+    VALUES (?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?)
     ON CONFLICT(race_date, venue_id, race_number)
-    DO UPDATE SET race_name=excluded.race_name, deadline=excluded.deadline, updated_at=datetime('now')
+    DO UPDATE SET race_name=excluded.race_name, deadline=excluded.deadline,
+      weather=COALESCE(excluded.weather, races.weather),
+      wind_direction=COALESCE(excluded.wind_direction, races.wind_direction),
+      wind_speed=COALESCE(excluded.wind_speed, races.wind_speed),
+      wave_height=COALESCE(excluded.wave_height, races.wave_height),
+      temperature=COALESCE(excluded.temperature, races.temperature),
+      water_temperature=COALESCE(excluded.water_temperature, races.water_temperature),
+      updated_at=datetime('now')
   `);
-  upsertRace.run(race.raceDate, race.venueId, race.raceNumber, race.raceName, race.deadline);
+  upsertRace.run(
+    race.raceDate, race.venueId, race.raceNumber, race.raceName, race.deadline,
+    weatherData?.weather || null, weatherData?.windDirection || null,
+    weatherData?.windSpeed || null, weatherData?.waveHeight || null,
+    weatherData?.temperature || null, weatherData?.waterTemperature || null,
+  );
 
   const row = db.prepare(
     'SELECT id FROM races WHERE race_date=? AND venue_id=? AND race_number=?'
@@ -254,7 +422,7 @@ export function saveRaceData(
 
   const insertAll = db.transaction(() => {
     for (const entry of entries) {
-      const exh = exhibition.get(entry.boatNumber);
+      const exh = exhEntries.get(entry.boatNumber);
       upsertEntry.run(
         raceId, entry.boatNumber, entry.racerId, entry.racerName,
         entry.racerClass, entry.racerBranch, entry.winRateAll, entry.winRateLocal,

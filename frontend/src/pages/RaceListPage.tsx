@@ -6,7 +6,7 @@ import dayjs, { Dayjs } from 'dayjs';
 import { fetchRaces, triggerRefresh, fetchStatus } from '../utils/api';
 import type { RaceSummary } from '../types';
 
-const AUTO_REFRESH_MS = 3 * 60 * 1000; // 3分
+const AUTO_REFRESH_MS = 60 * 1000; // 60秒ごとに自動更新
 
 function groupByVenue(races: RaceSummary[]): Map<string, RaceSummary[]> {
   const map = new Map<string, RaceSummary[]>();

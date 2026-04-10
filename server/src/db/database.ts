@@ -39,6 +39,12 @@ export function initializeDatabase(): void {
       race_name TEXT,
       deadline TEXT,
       status TEXT NOT NULL DEFAULT 'scheduled',
+      weather TEXT,
+      wind_direction TEXT,
+      wind_speed REAL,
+      wave_height REAL,
+      temperature REAL,
+      water_temperature REAL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(race_date, venue_id, race_number)
@@ -183,6 +189,26 @@ export function initializeDatabase(): void {
       UNIQUE(boat_number, racer_class)
     );
 
+    -- 収支記録テーブル
+    CREATE TABLE IF NOT EXISTS bet_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      race_id INTEGER REFERENCES races(id) ON DELETE SET NULL,
+      bet_date TEXT NOT NULL,
+      venue_name TEXT NOT NULL,
+      race_number INTEGER NOT NULL,
+      bet_type TEXT NOT NULL DEFAULT '2連単',
+      bet_combination TEXT NOT NULL,
+      bet_amount INTEGER NOT NULL,
+      is_hit INTEGER NOT NULL DEFAULT 0,
+      payout INTEGER NOT NULL DEFAULT 0,
+      odds REAL,
+      memo TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bet_records_date ON bet_records(bet_date);
+
     -- 設定テーブル
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -217,6 +243,46 @@ export function initializeDatabase(): void {
     insertSetting.run('min_edge', '2.5');
   });
   settingsInit();
+
+  // マイグレーション: bet_recordsテーブル追加
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='bet_records'").get();
+  if (!tables) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bet_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        race_id INTEGER REFERENCES races(id) ON DELETE SET NULL,
+        bet_date TEXT NOT NULL,
+        venue_name TEXT NOT NULL,
+        race_number INTEGER NOT NULL,
+        bet_type TEXT NOT NULL DEFAULT '2連単',
+        bet_combination TEXT NOT NULL,
+        bet_amount INTEGER NOT NULL,
+        is_hit INTEGER NOT NULL DEFAULT 0,
+        payout INTEGER NOT NULL DEFAULT 0,
+        odds REAL,
+        memo TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_bet_records_date ON bet_records(bet_date);
+    `);
+    console.log('Migration: added bet_records table');
+  }
+
+  // マイグレーション: 天候カラム追加（既存DBに対応）
+  const raceColumns = db.prepare("PRAGMA table_info(races)").all() as { name: string }[];
+  const raceColNames = raceColumns.map(c => c.name);
+  if (!raceColNames.includes('weather')) {
+    db.exec(`
+      ALTER TABLE races ADD COLUMN weather TEXT;
+      ALTER TABLE races ADD COLUMN wind_direction TEXT;
+      ALTER TABLE races ADD COLUMN wind_speed REAL;
+      ALTER TABLE races ADD COLUMN wave_height REAL;
+      ALTER TABLE races ADD COLUMN temperature REAL;
+      ALTER TABLE races ADD COLUMN water_temperature REAL;
+    `);
+    console.log('Migration: added weather columns to races');
+  }
 
   console.log('Database initialized:', DB_PATH);
 }

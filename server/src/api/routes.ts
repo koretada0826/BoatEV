@@ -274,4 +274,133 @@ router.put('/settings', (req: Request, res: Response) => {
   }
 });
 
+// ===== 収支管理API =====
+
+/**
+ * GET /api/bet-records?month=YYYY-MM
+ * 月別の収支記録一覧
+ */
+router.get('/bet-records', (req: Request, res: Response) => {
+  try {
+    const month = (req.query.month as string) || dayjs().format('YYYY-MM');
+    const startDate = `${month}-01`;
+    const endDate = dayjs(startDate).endOf('month').format('YYYY-MM-DD');
+
+    const records = db.prepare(`
+      SELECT * FROM bet_records
+      WHERE bet_date >= ? AND bet_date <= ?
+      ORDER BY bet_date DESC, venue_name, race_number
+    `).all(startDate, endDate) as any[];
+
+    // 月間サマリー
+    const totalBet = records.reduce((s: number, r: any) => s + r.bet_amount, 0);
+    const totalPayout = records.reduce((s: number, r: any) => s + r.payout, 0);
+    const hitCount = records.filter((r: any) => r.is_hit).length;
+    const totalRaces = records.length;
+
+    // 日別サマリー
+    const dailyMap = new Map<string, { bet: number; payout: number; hit: number; total: number }>();
+    for (const r of records) {
+      const d = r.bet_date;
+      if (!dailyMap.has(d)) dailyMap.set(d, { bet: 0, payout: 0, hit: 0, total: 0 });
+      const day = dailyMap.get(d)!;
+      day.bet += r.bet_amount;
+      day.payout += r.payout;
+      if (r.is_hit) day.hit++;
+      day.total++;
+    }
+    const daily = Array.from(dailyMap.entries()).map(([date, v]) => ({
+      date, ...v, profit: v.payout - v.bet,
+    })).sort((a, b) => a.date.localeCompare(b.date));
+
+    res.json({
+      month,
+      summary: {
+        totalBet,
+        totalPayout,
+        profit: totalPayout - totalBet,
+        hitCount,
+        totalRaces,
+        hitRate: totalRaces > 0 ? (hitCount / totalRaces * 100).toFixed(1) : '0',
+        returnRate: totalBet > 0 ? (totalPayout / totalBet * 100).toFixed(1) : '0',
+      },
+      daily,
+      records: records.map((r: any) => ({
+        id: r.id,
+        raceId: r.race_id,
+        betDate: r.bet_date,
+        venueName: r.venue_name,
+        raceNumber: r.race_number,
+        betType: r.bet_type,
+        betCombination: r.bet_combination,
+        betAmount: r.bet_amount,
+        isHit: !!r.is_hit,
+        payout: r.payout,
+        odds: r.odds,
+        memo: r.memo,
+        profit: r.payout - r.bet_amount,
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * POST /api/bet-records
+ * 収支記録を追加
+ */
+router.post('/bet-records', (req: Request, res: Response) => {
+  try {
+    const { raceId, betDate, venueName, raceNumber, betType, betCombination, betAmount, isHit, payout, odds, memo } = req.body;
+
+    const result = db.prepare(`
+      INSERT INTO bet_records (race_id, bet_date, venue_name, race_number, bet_type, bet_combination, bet_amount, is_hit, payout, odds, memo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(raceId || null, betDate, venueName, raceNumber, betType || '2連単', betCombination, betAmount, isHit ? 1 : 0, payout || 0, odds || null, memo || null);
+
+    res.json({ status: 'ok', id: result.lastInsertRowid });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * PUT /api/bet-records/:id
+ * 収支記録を更新
+ */
+router.put('/bet-records/:id', (req: Request, res: Response) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { betAmount, isHit, payout, odds, memo } = req.body;
+
+    db.prepare(`
+      UPDATE bet_records SET
+        bet_amount = COALESCE(?, bet_amount),
+        is_hit = COALESCE(?, is_hit),
+        payout = COALESCE(?, payout),
+        odds = COALESCE(?, odds),
+        memo = COALESCE(?, memo),
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(betAmount, isHit != null ? (isHit ? 1 : 0) : null, payout, odds, memo, id);
+
+    res.json({ status: 'ok' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * DELETE /api/bet-records/:id
+ */
+router.delete('/bet-records/:id', (req: Request, res: Response) => {
+  try {
+    db.prepare('DELETE FROM bet_records WHERE id = ?').run(parseInt(req.params.id, 10));
+    res.json({ status: 'ok' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;

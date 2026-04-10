@@ -3,6 +3,7 @@ import { Layout } from 'antd';
 import RaceListPage from './pages/RaceListPage';
 import RaceDetailPage from './pages/RaceDetailPage';
 import StrategyPage from './pages/StrategyPage';
+import ProfitPage from './pages/ProfitPage';
 
 const { Header, Content } = Layout;
 
@@ -27,12 +28,14 @@ export default function App() {
         </a>
         <NavLink to="/" label="レース" />
         <NavLink to="/strategy" label="作戦" />
+        <NavLink to="/profit" label="収支" />
       </Header>
       <Content style={{ padding: '16px 24px', maxWidth: 960, margin: '0 auto', width: '100%' }}>
         <Routes>
           <Route path="/" element={<RaceListPage />} />
           <Route path="/race/:id" element={<RaceDetailPage />} />
           <Route path="/strategy" element={<StrategyPage />} />
+          <Route path="/profit" element={<ProfitPage />} />
         </Routes>
       </Content>
     </Layout>

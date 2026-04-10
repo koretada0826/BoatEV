@@ -26,11 +26,17 @@ export default function RaceDetailPage() {
 
   useEffect(() => {
     if (!id) return;
-    setLoading(true);
-    fetchRaceDetail(parseInt(id, 10))
-      .then(setData)
-      .catch(() => message.error('データの取得に失敗しました'))
-      .finally(() => setLoading(false));
+    const load = (showSpinner = true) => {
+      if (showSpinner) setLoading(true);
+      fetchRaceDetail(parseInt(id, 10))
+        .then(setData)
+        .catch(() => message.error('データの取得に失敗しました'))
+        .finally(() => setLoading(false));
+    };
+    load();
+    // 60秒ごとに自動更新（オッズ・予測が変わるため）
+    const timer = setInterval(() => load(false), 60 * 1000);
+    return () => clearInterval(timer);
   }, [id]);
 
   if (loading) return <div style={{ textAlign: 'center', padding: 48 }}><Spin /></div>;
@@ -39,6 +45,7 @@ export default function RaceDetailPage() {
   const isBuy = data.verdict === 'buy';
   const strategies = (data as any).strategies || [];
   const highStrategies = strategies.filter((s: any) => s.confidence === 'high');
+  const recommendations = (data as any).recommendations || [];
   const raceChars = analyzeRace(data);
 
   return (
@@ -70,7 +77,61 @@ export default function RaceDetailPage() {
         )}
       </div>
 
-      {/* ===== 賭け方カード（購入推奨時のみ） ===== */}
+      {/* ===== 買い目サマリー（最も重要な情報を最初に表示） ===== */}
+      {isBuy && (highStrategies.length > 0 || recommendations.length > 0) && (
+        <div style={{
+          padding: '20px', borderRadius: 10, marginBottom: 16,
+          background: '#f6ffed', border: '2px solid #52c41a',
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#3a7d44', marginBottom: 12 }}>
+            この買い目で勝負！
+          </div>
+          {(highStrategies.length > 0 ? highStrategies : recommendations.map((r: any) => ({
+            boats: [r.firstPlace, r.secondPlace],
+            label: `2連単 ${r.firstPlace}-${r.secondPlace}`,
+            odds: r.odds,
+            suggestedBet: null,
+            reason: r.reason,
+          }))).map((s: any, i: number) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              padding: '12px 16px', background: '#fff', borderRadius: 8,
+              border: '1px solid #b7eb8f', marginBottom: i < (highStrategies.length > 0 ? highStrategies : recommendations).length - 1 ? 8 : 0,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <BoatBadge number={s.boats[0]} />
+                <span style={{ color: '#999', fontSize: 16, fontWeight: 700 }}>→</span>
+                <BoatBadge number={s.boats[1]} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: '#222' }}>{s.label}</div>
+                <div style={{ fontSize: 11, color: '#888' }}>2連単（1着→2着の順番で当てる）</div>
+              </div>
+              {s.odds > 0 && (
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: '#1677ff' }}>{s.odds}倍</div>
+                  <div style={{ fontSize: 10, color: '#999' }}>100円→{Math.round(s.odds * 100)}円</div>
+                </div>
+              )}
+            </div>
+          ))}
+          {highStrategies.length > 0 && highStrategies[0].suggestedBet && (
+            <div style={{ marginTop: 12, padding: '10px 16px', background: '#fff', borderRadius: 8, border: '1px solid #b7eb8f' }}>
+              <span style={{ fontSize: 12, color: '#888' }}>1点あたり </span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: '#333' }}>{highStrategies[0].suggestedBet}</span>
+              <span style={{ fontSize: 12, color: '#888' }}> × {highStrategies.length}点 = 合計 </span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: '#d4380d' }}>
+                {(() => {
+                  const amount = parseInt(highStrategies[0].suggestedBet.replace(/[^0-9]/g, ''), 10) || 100;
+                  return (amount * highStrategies.length).toLocaleString() + '円';
+                })()}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== 賭け方カード詳細（購入推奨時のみ） ===== */}
       {highStrategies.length > 0 && highStrategies.map((s: any, i: number) => {
         return (
         <div key={i} style={{

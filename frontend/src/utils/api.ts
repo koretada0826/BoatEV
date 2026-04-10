@@ -38,3 +38,28 @@ export async function fetchSettings(): Promise<Record<string, any>> {
 export async function updateSettings(settings: Record<string, any>): Promise<void> {
   await api.put('/settings', settings);
 }
+
+// 収支管理API
+export async function fetchBetRecords(month: string): Promise<any> {
+  const { data } = await api.get('/bet-records', { params: { month } });
+  return data;
+}
+
+export async function createBetRecord(record: {
+  raceId?: number; betDate: string; venueName: string; raceNumber: number;
+  betType?: string; betCombination: string; betAmount: number;
+  isHit: boolean; payout: number; odds?: number; memo?: string;
+}): Promise<{ id: number }> {
+  const { data } = await api.post('/bet-records', record);
+  return data;
+}
+
+export async function updateBetRecord(id: number, update: {
+  betAmount?: number; isHit?: boolean; payout?: number; odds?: number; memo?: string;
+}): Promise<void> {
+  await api.put(`/bet-records/${id}`, update);
+}
+
+export async function deleteBetRecord(id: number): Promise<void> {
+  await api.delete(`/bet-records/${id}`);
+}
