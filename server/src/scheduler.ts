@@ -1,4 +1,6 @@
 import dayjs from 'dayjs';
+import fs from 'fs';
+import path from 'path';
 import { scrapeTodayRaces, scrapeAllOdds } from './scraper/index';
 import { predictRace, savePrediction } from './prediction/calculator';
 import { saveDiscoveredStrategies } from './prediction/auto_strategy';
@@ -6,7 +8,7 @@ import { fetchTodayVenues, fetchRaceCard, fetchExhibitionData, saveRaceData, fet
 import { fetchExactaOdds, saveOddsData } from './scraper/odds';
 import { fetchWinOdds, saveWinOdds } from './scraper/win_odds';
 import { fetchRaceResult, saveResultData } from './scraper/results';
-import db from './db/database';
+import db, { DB_DIR, DB_PATH } from './db/database';
 
 const ODDS_INTERVAL_MS = 3 * 60 * 1000;
 const RACE_FETCH_INTERVAL_MS = 30 * 60 * 1000;
@@ -218,5 +220,54 @@ export async function startScheduler(): Promise<void> {
   // 初回: 過去データ収集も開始
   setTimeout(() => collectHistoricalData(), 30000);
 
-  console.log('[スケジューラー] オッズ3分/レース30分/過去データ10分ごとに自動更新');
+  // 毎日1回: DBバックアップ（朝6時）
+  let lastBackupDate = '';
+  setInterval(() => {
+    const now = dayjs();
+    const today = now.format('YYYY-MM-DD');
+    if (now.hour() === 6 && lastBackupDate !== today) {
+      lastBackupDate = today;
+      backupDatabase();
+    }
+  }, 60 * 1000); // 1分ごとチェック
+
+  // 初回起動時もバックアップ
+  backupDatabase();
+
+  console.log('[スケジューラー] オッズ3分/レース30分/過去データ5分/バックアップ毎日6時');
+}
+
+/**
+ * DBを自動バックアップ（直近3日分を保持）
+ */
+function backupDatabase(): void {
+  try {
+    const dbPath = DB_PATH;
+    const backupDir = path.join(DB_DIR, 'backups');
+
+    if (!fs.existsSync(dbPath)) return;
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+    const today = dayjs().format('YYYY-MM-DD');
+    const backupPath = path.join(backupDir, `boatrace_${today}.db`);
+
+    // 今日のバックアップがなければ作成
+    if (!fs.existsSync(backupPath)) {
+      fs.copyFileSync(dbPath, backupPath);
+      const sizeMB = (fs.statSync(backupPath).size / 1024 / 1024).toFixed(0);
+      console.log(`[バックアップ] ${backupPath} (${sizeMB}MB)`);
+    }
+
+    // 古いバックアップを削除（3日分だけ保持）
+    const files = fs.readdirSync(backupDir)
+      .filter(f => f.startsWith('boatrace_') && f.endsWith('.db'))
+      .sort()
+      .reverse();
+    for (const f of files.slice(3)) {
+      fs.unlinkSync(path.join(backupDir, f));
+      console.log(`[バックアップ] 古いバックアップ削除: ${f}`);
+    }
+  } catch (e: any) {
+    console.error('[バックアップ] エラー:', e.message);
+  }
 }

@@ -2,8 +2,8 @@ import Database, { Database as DatabaseType } from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_DIR = path.join(__dirname, '..', '..', 'data');
-const DB_PATH = path.join(DB_DIR, 'boatrace.db');
+export const DB_DIR = path.join(__dirname, '..', '..', 'data');
+export const DB_PATH = path.join(DB_DIR, 'boatrace.db');
 
 // dataディレクトリがなければ作成
 if (!fs.existsSync(DB_DIR)) {
