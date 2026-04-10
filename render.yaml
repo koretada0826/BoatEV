@@ -4,13 +4,12 @@ services:
   - type: web
     name: boatrace-ev-api
     runtime: node
+    plan: free
     buildCommand: cd server && npm install && npm run build
     startCommand: cd server && npm start
     envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
+      - key: NODE_ENV
+        value: production
       - key: PORT
         value: 3001
 
